@@ -1,26 +1,136 @@
+name: 每日股票分析
+
 on:
+  # 定时触发 - 每天北京时间 22:30 (UTC 14:30)
   schedule:
-    - cron: '30 14 * * 1-5'  # UTC 14:30 = 北京时间 22:30（周一至周五）
+    - cron: '30 14 * * 1-5'     # 周一到周五，UTC 14:30 = 北京时间 22:30
+  
+  # 手动触发
   workflow_dispatch:
+    inputs:
+      mode:
+        description: '运行模式'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full          # 完整分析（股票+大盘）
+          - market-only   # 仅大盘复盘
+          - stocks-only   # 仅股票分析
 
-# ... 中间省略 ...
+# 并发控制：同一时间只运行一个分析任务
+concurrency:
+  group: stock-analysis
+  cancel-in-progress: false
 
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    # 添加超时限制，防止任务卡死
+    timeout-minutes: 30
+    
+    steps:
+      - name: 随机延迟（避免固定时间访问）
+        run: sleep $((RANDOM % 60))  # 随机延迟0-60秒启动
+      
+      - name: 检出代码
+        uses: actions/checkout@v4
+      
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 安装依赖
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: 创建必要目录
+        run: |
+          mkdir -p data logs reports
+      
       - name: 执行股票分析
         env:
-          # AI 配置（Kimi 优先）
+          # ==========================================
+          # AI 配置（优先使用 Kimi K2.5）
+          # ==========================================
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
           
-          # Gemini（备用，可选）
+          # Gemini AI（备用，可选）
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: 'gemini-3-flash-preview'
+          GEMINI_MODEL_FALLBACK: 'gemini-2.5-flash'
+          GEMINI_REQUEST_DELAY: '3.0'
           
-          # 邮箱配置
+          # ==========================================
+          # 数据源
+          # ==========================================
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          
+          # ==========================================
+          # 搜索服务（推荐配置 Tavily）
+          # ==========================================
+          BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
+          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
+          SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
+          
+          # ==========================================
+          # 通知渠道 - 邮箱（必配）
+          # ==========================================
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECEIVERS: ${{ secrets.EMAIL_RECEIVERS }}
+          EMAIL_SENDER_NAME: ${{ secrets.EMAIL_SENDER_NAME || 'daily_stock_analysis股票分析助手' }}
           
-          # 股票列表（必须设置 Secret）
+          # 其他通知渠道（可选）
+          WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          SERVERCHAN3_SENDKEY: ${{ secrets.SERVERCHAN3_SENDKEY }}
+          CUSTOM_WEBHOOK_URLS: ${{ secrets.CUSTOM_WEBHOOK_URLS }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          
+          # ==========================================
+          # 自选股配置（从 Secrets 读取）
+          # ==========================================
           STOCK_LIST: ${{ secrets.STOCK_LIST }}
           
-          # 其他配置保持不变...
+          # ==========================================
+          # 运行配置
+          # ==========================================
+          REPORT_TYPE: ${{ secrets.REPORT_TYPE || 'full' }}
+          SINGLE_STOCK_NOTIFY: 'false'
+          MARKET_REVIEW_ENABLED: 'true'
+          ANALYSIS_DELAY: '10'
+          MAX_WORKERS: '3'
+          LOG_LEVEL: INFO
+          
+        run: |
+          echo "=========================================="
+          echo "🚀 股票智能分析系统"
+          echo "=========================================="
+          echo "⏰ 时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
+          echo "📊 自选股: ${{ secrets.STOCK_LIST }}"
+          echo ""
+          echo "【配置检查】"
+          echo "  Kimi API: $([ -n "${{ secrets.OPENAI_API_KEY }}" ] && echo '✅' || echo '❌')"
+          echo "  Gmail: $([ -n "${{ secrets.EMAIL_PASSWORD }}" ] && echo '✅' || echo '❌')"
+          echo "=========================================="
+          
+          python main.py
+      
+      - name: 上传分析报告
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: analysis-reports-${{ github.run_number }}
+          path: |
+            reports/
+            logs/
+          retention-days: 30
